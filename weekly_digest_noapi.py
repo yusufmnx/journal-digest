@@ -43,25 +43,16 @@ import requests
 #   https://europepmc.org/searchsyntax
 # These are the same tuned, human-scoped queries as the main version.
 # ----------------------------------------------------------------------------
-# --- Human-scoping, v3: title-anchored exclusion + generous inclusion ---
+# --- Human-scoping, v4: light-touch inclusion + title-only exclusion ---
 #
-# History of this filter:
-#   v1 let pathogen papers in ("patient" matched infectious-disease work).
-#   v2 over-corrected: a broad NOT over the whole ABSTRACT killed real human
-#      papers that merely *mentioned* a non-human word in passing (e.g. a UK
-#      Biobank PRS paper that says "antimicrobial resistance" once).
-#
-# v3 principle, validated against real missed papers:
-#   - INCLUDE generously: match on a wide set of human-context terms anywhere.
-#   - EXCLUDE narrowly: only when a pathogen / model-organism name appears in
-#     the TITLE, where it signals the paper is actually ABOUT that organism.
-#     A passing mention in the abstract no longer excludes anything.
-#
-# Applied as: (topic) AND HUMAN NOT_NONHUMAN_TITLE
+# Change from v3: MESH:"Humans" REMOVED. It was the most likely cause of the
+# near-empty result set: recently published papers and preprints (a large part
+# of this feed) often have no MeSH terms assigned yet, so requiring a MeSH tag
+# silently drops them. Non-human filtering is handled entirely by the
+# title-anchored exclusion below, which does not depend on MeSH.
 
 HUMAN = (
-    '(MESH:"Humans" '
-    'OR ABSTRACT:"human" OR TITLE:"human" '
+    '(ABSTRACT:"human" OR TITLE:"human" '
     'OR ABSTRACT:"people" OR ABSTRACT:"population" OR TITLE:"population" '
     'OR ABSTRACT:"ethnic" OR TITLE:"ethnic" '
     'OR ABSTRACT:"ancestry" OR TITLE:"ancestry" '
@@ -73,7 +64,7 @@ HUMAN = (
 
 # Exclusion fires ONLY on TITLE terms: a non-human organism named in the title
 # means the paper is about that organism, not about humans. Kept deliberately
-# short and specific to avoid the v2 over-blocking.
+# short and specific to avoid over-blocking.
 NOT_NONHUMAN_TITLE = (
     'NOT ('
     # pathogens / microbes (title-level)
@@ -180,8 +171,8 @@ def _int_env(name, default):
 
 
 ENABLED    = _flag("ENABLED", True)
-DAYS_BACK  = _int_env("DAYS_BACK", 7)
-MAX_PAPERS = _int_env("MAX_PAPERS", 60)   # higher default: entries are cheap now
+DAYS_BACK  = _int_env("DAYS_BACK", 14)   # 14d: a 7d window often catches too little
+MAX_PAPERS = _int_env("MAX_PAPERS", 60)
 
 EPMC_BASE  = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 PER_TOPIC_LIMIT = 20
@@ -204,6 +195,12 @@ def epmc_search(query_fragment, date_from, date_to):
     except Exception as e:
         print(f"  ! Europe PMC query failed: {e}", file=sys.stderr)
         return []
+
+    # Log the total matches Europe PMC reports for this query. If this is 0 or
+    # tiny, the query is the problem (not the display). The full query is
+    # printed too so it can be pasted into https://europepmc.org/search to check.
+    print(f"  hitCount={data.get('hitCount', '?')}")
+    print(f"  query={query}")
 
     papers = []
     for res in data.get("resultList", {}).get("result", []):
