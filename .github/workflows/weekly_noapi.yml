@@ -1,0 +1,38 @@
+name: Weekly paper digest (no API)
+
+# Use THIS workflow if you deployed weekly_digest_noapi.py (abstracts only,
+# no Anthropic API). If you use the AI-summary version instead, use weekly.yml.
+# Don't enable both at once unless you want two emails.
+
+on:
+  schedule:
+    # Every Monday 06:00 UTC (= 14:00 Malaysia time, UTC+8). Cron is in UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:   # manual "Run workflow" button for testing
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run digest
+        env:
+          # Only email credentials are needed. No Anthropic key.
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          # Optional switches, stored as repository Variables (not secrets):
+          ENABLED: ${{ vars.ENABLED }}
+          # DAYS_BACK: ${{ vars.DAYS_BACK }}
+          # MAX_PAPERS: ${{ vars.MAX_PAPERS }}
+        run: python weekly_digest_noapi.py
