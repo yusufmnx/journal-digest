@@ -43,17 +43,56 @@ import requests
 #   https://europepmc.org/searchsyntax
 # These are the same tuned, human-scoped queries as the main version.
 # ----------------------------------------------------------------------------
+# --- Human-scoping, rewritten to cut pathogen / animal / plant contamination ---
+#
+# Two problems in the first version let non-human work through:
+#   1. "patient" in the human signal matched infectious-disease papers about
+#      pathogens (e.g. a Burkholderia pseudomallei study mentions patients).
+#   2. "population structure" is shared vocabulary with microbial phylogenetics.
+#
+# Fix, in layers:
+#   HUMAN         a positive signal: a MeSH "Humans" tag OR clear human-context
+#                 words. We keep this as an OR (not a hard MeSH gate) because
+#                 preprints often have no MeSH terms yet, and a hard gate would
+#                 silently drop them. "patient" is deliberately removed.
+#   NOT_NONHUMAN  a much broader exclusion of organism and pathogen-genomics
+#                 terms. This is the workhorse that removes camels, Drosophila,
+#                 bacteria, viruses, plants, etc.
+#
+# Applied together as: (topic) AND HUMAN NOT_NONHUMAN
+
 HUMAN = (
-    '(ABSTRACT:"human" OR TITLE:"human" OR ABSTRACT:"people" '
-    'OR ABSTRACT:"population" OR TITLE:"population" OR ABSTRACT:"ethnic" '
-    'OR TITLE:"ethnic" OR ABSTRACT:"ancestry" OR TITLE:"ancestry" '
-    'OR ABSTRACT:"cohort" OR ABSTRACT:"individuals" OR ABSTRACT:"Homo sapiens" '
-    'OR ABSTRACT:"patient" OR ABSTRACT:"biobank")'
+    '(MESH:"Humans" '
+    'OR ABSTRACT:"human" OR TITLE:"human" '
+    'OR ABSTRACT:"people" OR ABSTRACT:"population" OR TITLE:"population" '
+    'OR ABSTRACT:"ethnic" OR TITLE:"ethnic" '
+    'OR ABSTRACT:"ancestry" OR TITLE:"ancestry" '
+    'OR ABSTRACT:"Homo sapiens" OR ABSTRACT:"biobank" '
+    'OR TITLE:"UK Biobank" OR ABSTRACT:"UK Biobank")'
 )
-NOT_MICROBIAL = (
-    'NOT (TITLE:"isolates" OR TITLE:"strains" OR TITLE:"accessions" '
-    'OR ABSTRACT:"bacterial isolates" OR ABSTRACT:"viral genomes" '
-    'OR ABSTRACT:"crop" OR ABSTRACT:"livestock" OR ABSTRACT:"wild populations")'
+
+# Broad exclusion. Grouped for readability; all OR-ed inside one NOT.
+NOT_NONHUMAN = (
+    'NOT ('
+    # microbes / pathogens
+    'ABSTRACT:"bacterial" OR ABSTRACT:"bacterium" OR ABSTRACT:"pathogen" '
+    'OR TITLE:"pathogen" OR ABSTRACT:"virus" OR TITLE:"virus" OR ABSTRACT:"viral" '
+    'OR ABSTRACT:"antimicrobial" OR ABSTRACT:"antibiotic" OR ABSTRACT:"outbreak" '
+    'OR ABSTRACT:"isolates" OR TITLE:"isolates" OR ABSTRACT:"strains" OR TITLE:"strains" '
+    'OR ABSTRACT:"serotype" OR ABSTRACT:"phylogenomic" OR TITLE:"phylogenomic" '
+    'OR ABSTRACT:"E. coli" OR ABSTRACT:"Salmonella" OR ABSTRACT:"Mycobacterium" '
+    'OR ABSTRACT:"Burkholderia" OR ABSTRACT:"Klebsiella" OR ABSTRACT:"Pseudomonas" '
+    'OR ABSTRACT:"Staphylococcus" OR ABSTRACT:"Streptococcus" '
+    # model organisms / animals / plants
+    'OR TITLE:"Drosophila" OR ABSTRACT:"Drosophila" OR ABSTRACT:"zebrafish" '
+    'OR ABSTRACT:"mouse" OR ABSTRACT:"murine" OR ABSTRACT:"mice" '
+    'OR ABSTRACT:"cattle" OR ABSTRACT:"bovine" OR ABSTRACT:"camel" '
+    'OR ABSTRACT:"livestock" OR ABSTRACT:"poultry" OR ABSTRACT:"swine" OR ABSTRACT:"porcine" '
+    'OR ABSTRACT:"crop" OR ABSTRACT:"plant" OR ABSTRACT:"maize" OR ABSTRACT:"rice" '
+    'OR ABSTRACT:"wild populations" OR ABSTRACT:"accessions" '
+    # veterinary / non-human MeSH
+    'OR MESH:"Animals, Wild" OR MESH:"Plants" OR MESH:"Bacteria"'
+    ')'
 )
 
 TOPICS = [
@@ -71,7 +110,7 @@ TOPICS = [
      'OR TITLE:"reference cohort" OR ABSTRACT:"reference cohort" '
      'OR ((ABSTRACT:"genomic diversity" OR ABSTRACT:"genetic diversity" '
      'OR ABSTRACT:"human genetic variation") AND (ABSTRACT:"sequencing" OR ABSTRACT:"whole-genome"))'
-     f') AND {HUMAN} {NOT_MICROBIAL}'),
+     f') AND {HUMAN} {NOT_NONHUMAN}'),
 
     ("Ancestry, admixture & demographic history",
      '('
@@ -84,7 +123,7 @@ TOPICS = [
      'OR ABSTRACT:"population stratification") '
      'AND (ABSTRACT:"whole-genome" OR ABSTRACT:"sequencing" OR ABSTRACT:"SNP" '
      'OR ABSTRACT:"variants" OR ABSTRACT:"genome"))'
-     f') AND {HUMAN} {NOT_MICROBIAL}'),
+     f') AND {HUMAN} {NOT_NONHUMAN}'),
 
     ("Pangenome, assembly & T2T",
      '('
@@ -95,7 +134,7 @@ TOPICS = [
      'OR TITLE:"telomere-to-telomere" OR ABSTRACT:"telomere-to-telomere" '
      'OR TITLE:"T2T" OR ABSTRACT:"complete genome assembly" '
      'OR TITLE:"human pangenome" OR ABSTRACT:"human pangenome"'
-     f') AND {HUMAN} {NOT_MICROBIAL}'),
+     f') AND {HUMAN} {NOT_NONHUMAN}'),
 
     ("Sequencing technology evaluation",
      '(('
@@ -106,7 +145,7 @@ TOPICS = [
      'ABSTRACT:"comparison" OR TITLE:"comparison" OR ABSTRACT:"benchmark" OR TITLE:"benchmark" '
      'OR ABSTRACT:"evaluation" OR ABSTRACT:"read accuracy" OR ABSTRACT:"variant calling accuracy" '
      'OR ABSTRACT:"structural variant detection" OR ABSTRACT:"de novo assembly"'
-     f')) AND {HUMAN}'),
+     f')) AND {HUMAN} {NOT_NONHUMAN}'),
 
     ("Precision & population health genomics",
      '(('
@@ -119,7 +158,7 @@ TOPICS = [
      'OR TITLE:"genomic implementation" OR ABSTRACT:"genomic implementation" '
      'OR ((ABSTRACT:"polygenic risk score" OR ABSTRACT:"polygenic score") '
      'AND (ABSTRACT:"clinical" OR ABSTRACT:"implementation" OR ABSTRACT:"population"))'
-     f')) AND {HUMAN} {NOT_MICROBIAL}'),
+     f')) AND {HUMAN} {NOT_NONHUMAN}'),
 ]
 
 
@@ -202,80 +241,170 @@ def epmc_search(query_fragment, date_from, date_to):
     return papers
 
 
+import re
+
+# Formatting tags Europe PMC uses that are safe and meaningful to keep
+# (italic species names, sub/superscripts in formulae, bold). Everything else
+# is escaped so it can never inject markup.
+_SAFE_TAGS = ("i", "b", "sub", "sup", "em", "strong")
+_TAG_RE = re.compile(r"</?([a-zA-Z0-9]+)[^>]*>")
+
+
+def _sanitize_inline(text):
+    """Escape the abstract for HTML, but let a small safelist of formatting
+    tags render instead of showing as literal <i> text. Approach: escape the
+    whole string first (so all real markup is neutralised), then selectively
+    un-escape the safelisted tags. This is safe because only the exact tag
+    forms we re-enable can come back; anything else stays escaped."""
+    escaped = html.escape(text)
+    for tag in _SAFE_TAGS:
+        # Re-enable <i>, </i>, <i/> style forms only.
+        escaped = escaped.replace(f"&lt;{tag}&gt;", f"<{tag}>")
+        escaped = escaped.replace(f"&lt;/{tag}&gt;", f"</{tag}>")
+        escaped = escaped.replace(f"&lt;{tag}/&gt;", f"<{tag}>")
+        # Capitalised variants occasionally appear.
+        T = tag.upper()
+        escaped = escaped.replace(f"&lt;{T}&gt;", f"<{tag}>")
+        escaped = escaped.replace(f"&lt;/{T}&gt;", f"</{tag}>")
+    return escaped
+
+
 def _clean_abstract(text):
-    """Europe PMC abstracts sometimes carry section labels and stray markup.
-    Light touch: strip, collapse whitespace, keep it readable."""
+    """Strip, collapse whitespace. Returns a placeholder when empty."""
     if not text:
-        return "No abstract available for this record."
+        return ""
     return " ".join(text.split())
 
 
+def _preview(text, limit=280):
+    """Return (preview_html, was_truncated). Truncates on a word boundary near
+    `limit` characters, sanitises inline formatting, and closes any safelisted
+    tag left open by the cut so italics don't bleed into the rest of the email."""
+    clean = _clean_abstract(text)
+    if not clean:
+        return ("No abstract available for this record.", False)
+
+    truncated = len(clean) > limit
+    if truncated:
+        cut = clean[:limit]
+        # back up to the last space so we don't slice a word in half
+        sp = cut.rfind(" ")
+        if sp > limit - 60:
+            cut = cut[:sp]
+        snippet = cut.rstrip(" ,;:.") + "\u2026"   # ellipsis
+    else:
+        snippet = clean
+
+    safe = _sanitize_inline(snippet)
+
+    # If truncation left an unclosed safelisted tag open, close it.
+    for tag in _SAFE_TAGS:
+        opens = len(re.findall(f"<{tag}>", safe))
+        closes = len(re.findall(f"</{tag}>", safe))
+        if opens > closes:
+            safe += f"</{tag}>" * (opens - closes)
+    return (safe, truncated)
+
+
 def build_html(sections, date_from, date_to):
-    """Assemble the skimmable HTML email with collapsible abstracts."""
-    total = sum(len(p) for p in sections.values())
-    css = """
-    body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-         color:#1a1a1a;line-height:1.45;max-width:720px;margin:0 auto;padding:16px;}
-    h1{font-size:20px;margin-bottom:2px;}
-    .sub{color:#666;font-size:13px;margin-bottom:8px;}
-    .hint{color:#999;font-size:12px;margin-bottom:24px;font-style:italic;}
-    h2{font-size:16px;border-bottom:2px solid #e0e0e0;padding-bottom:4px;
-       margin-top:30px;color:#0b5;}
-    .paper{margin:0 0 14px 0;padding-bottom:12px;border-bottom:1px solid #f2f2f2;}
-    .ptitle{font-weight:600;font-size:15px;}
-    .ptitle a{color:#1155cc;text-decoration:none;}
-    .meta{color:#888;font-size:12px;margin:2px 0 4px 0;}
-    details{margin-top:4px;}
-    summary{cursor:pointer;color:#1155cc;font-size:13px;
-            list-style:none;display:inline-block;}
-    summary::-webkit-details-marker{display:none;}
-    summary::before{content:"\\25B6  Abstract";}
-    details[open] summary::before{content:"\\25BC  Abstract";}
-    .abstract{font-size:13.5px;color:#333;margin:8px 0 2px 0;
-              padding:10px 12px;background:#fafafa;border-left:3px solid #d9d9d9;
-              border-radius:0 4px 4px 0;}
-    .tag{display:inline-block;background:#eef6ff;color:#1155cc;font-size:11px;
-         padding:1px 6px;border-radius:3px;margin-left:6px;}
-    .empty{color:#999;font-style:italic;font-size:13px;}
-    .foot{color:#aaa;font-size:11px;margin-top:32px;border-top:1px solid #eee;
-          padding-top:12px;}
+    """Assemble the skimmable HTML email.
+
+    Design constraints learned the hard way:
+      - Gmail strips <style> blocks and interactive HTML (<details>), so there
+        is NO reliable in-email collapse. All styling is therefore INLINE, and
+        each abstract shows as a short truncated preview with the full text one
+        click away via the title link. This renders the same everywhere.
+      - Europe PMC abstracts contain <i> etc. for species names; those are
+        preserved via a safelist, everything else is escaped.
     """
-    out = [f"<html><head><meta charset='utf-8'><style>{css}</style></head><body>"]
-    out.append("<h1>Weekly literature digest</h1>")
-    out.append(f"<div class='sub'>{total} new papers, {date_from} to {date_to}"
-               f" &middot; source: Europe PMC</div>")
-    out.append("<div class='hint'>Click &ldquo;Abstract&rdquo; under any paper "
-               "to expand it. Titles link to the full text.</div>")
+    total = sum(len(p) for p in sections.values())
+
+    # Inline style fragments (Gmail-safe). Kept as named constants for reuse.
+    S_BODY   = ("font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"
+                "sans-serif;color:#1a1a1a;line-height:1.45;max-width:720px;"
+                "margin:0 auto;padding:16px;")
+    S_H1     = "font-size:20px;margin:0 0 2px 0;"
+    S_SUB    = "color:#666;font-size:13px;margin-bottom:20px;"
+    S_H2     = ("font-size:16px;border-bottom:2px solid #e0e0e0;"
+                "padding-bottom:4px;margin:30px 0 12px 0;color:#0a8f4f;")
+    S_PAPER  = "margin:0 0 14px 0;padding-bottom:12px;border-bottom:1px solid #f2f2f2;"
+    S_TITLE  = "font-weight:600;font-size:15px;"
+    S_LINK   = "color:#1155cc;text-decoration:none;"
+    S_META   = "color:#888;font-size:12px;margin:2px 0 6px 0;"
+    S_ABS    = ("font-size:13.5px;color:#333;margin:6px 0 2px 0;padding:10px 12px;"
+                "background:#fafafa;border-left:3px solid #d9d9d9;")
+    S_MORE   = "color:#1155cc;text-decoration:none;font-size:12px;white-space:nowrap;"
+    S_TAG    = ("background:#eef6ff;color:#1155cc;font-size:11px;padding:1px 6px;"
+                "border-radius:3px;margin-left:6px;")
+    S_EMPTY  = "color:#999;font-style:italic;font-size:13px;"
+    S_FOOT   = ("color:#aaa;font-size:11px;margin-top:32px;border-top:1px solid "
+                "#eee;padding-top:12px;")
+
+    out = ["<html><head><meta charset='utf-8'></head>"
+           f"<body style=\"{S_BODY}\">"]
+    out.append(f"<h1 style=\"{S_H1}\">Weekly literature digest</h1>")
+    out.append(f"<div style=\"{S_SUB}\">{total} new papers, {date_from} to "
+               f"{date_to} &middot; source: Europe PMC. Each entry shows the "
+               f"start of the abstract; the title links to the full text.</div>")
 
     for label, papers in sections.items():
-        out.append(f"<h2>{html.escape(label)} ({len(papers)})</h2>")
+        out.append(f"<h2 style=\"{S_H2}\">{html.escape(label)} ({len(papers)})</h2>")
         if not papers:
-            out.append("<div class='empty'>No new papers this week.</div>")
+            out.append(f"<div style=\"{S_EMPTY}\">No new papers this week.</div>")
             continue
         for p in papers:
-            tag = "<span class='tag'>preprint</span>" if p["is_preprint"] else ""
+            tag = (f"<span style=\"{S_TAG}\">preprint</span>"
+                   if p["is_preprint"] else "")
             authors = html.escape(p["authors"])
             if len(authors) > 130:
-                authors = authors[:130] + "..."
-            abstract = html.escape(_clean_abstract(p["abstract"]))
-            out.append("<div class='paper'>")
-            out.append(f"<div class='ptitle'><a href='{html.escape(p['link'])}'>"
-                       f"{html.escape(p['title'])}</a>{tag}</div>")
-            out.append(f"<div class='meta'>{authors}<br>"
-                       f"{html.escape(p['journal'])} &middot; {html.escape(p['date'])}</div>")
-            out.append(f"<details><summary></summary>"
-                       f"<div class='abstract'>{abstract}</div></details>")
+                authors = authors[:130] + "\u2026"
+            preview, truncated = _preview(p["abstract"])
+            link = html.escape(p["link"])
+            more = (f" <a href=\"{link}\" style=\"{S_MORE}\">read more &rsaquo;</a>"
+                    if truncated else "")
+            out.append(f"<div style=\"{S_PAPER}\">")
+            out.append(f"<div style=\"{S_TITLE}\"><a href=\"{link}\" "
+                       f"style=\"{S_LINK}\">{html.escape(p['title'])}</a>{tag}</div>")
+            out.append(f"<div style=\"{S_META}\">{authors}<br>"
+                       f"{html.escape(p['journal'])} &middot; "
+                       f"{html.escape(p['date'])}</div>")
+            out.append(f"<div style=\"{S_ABS}\">{preview}{more}</div>")
             out.append("</div>")
 
-    out.append("<div class='foot'>Generated automatically from Europe PMC. "
-               "No AI summaries in this version: abstracts are shown as "
-               "published. Edit the TOPICS list in weekly_digest_noapi.py to "
-               "change coverage.</div>")
+    out.append(f"<div style=\"{S_FOOT}\">Generated automatically from Europe PMC. "
+               "Abstracts are shown as published, trimmed to a preview. Edit the "
+               "TOPICS list in weekly_digest_noapi.py to change coverage.</div>")
     out.append("</body></html>")
     return "\n".join(out)
 
 
-def send_email(html_body, total, date_from, date_to):
+def _plaintext_version(sections, date_from, date_to):
+    """A real plain-text alternative. A message whose only text part says
+    'best viewed as HTML' looks spammy to filters; a genuine text version that
+    mirrors the content scores better and is a good fallback."""
+    lines = [f"Weekly literature digest ({date_from} to {date_to})",
+             "Source: Europe PMC", ""]
+    for label, papers in sections.items():
+        lines.append(f"== {label} ({len(papers)}) ==")
+        if not papers:
+            lines.append("  No new papers this week.")
+        for p in papers:
+            pre = _clean_abstract(p["abstract"])
+            if len(pre) > 240:
+                pre = pre[:240].rsplit(" ", 1)[0] + "\u2026"
+            lines.append(f"- {p['title']}")
+            lines.append(f"  {p['journal']} | {p['date']}"
+                         + ("  [preprint]" if p["is_preprint"] else ""))
+            if pre:
+                lines.append(f"  {pre}")
+            lines.append(f"  {p['link']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def send_email(html_body, plain_body, total, date_from, date_to):
+    from email.utils import formatdate, make_msgid, formataddr
+
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", "465"))
     user = os.environ["SMTP_USER"]
@@ -283,16 +412,28 @@ def send_email(html_body, total, date_from, date_to):
     mail_to = os.environ["MAIL_TO"]
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Literature digest: {total} new papers ({date_from} to {date_to})"
-    msg["From"] = user
+    msg["Subject"] = (f"Literature digest: {total} new papers "
+                      f"({date_from} to {date_to})")
+    # A display name plus proper Date and Message-ID are basic legitimacy
+    # signals; their absence is a common reason strict filters flag mail.
+    msg["From"] = formataddr(("Literature Digest", user))
     msg["To"] = mail_to
-    msg.attach(MIMEText("This digest is best viewed as HTML.", "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    msg["Reply-To"] = user
+    msg["Date"] = formatdate(localtime=True)
+    # Message-ID domain should match the sender domain (e.g. gmail.com).
+    sender_domain = user.split("@")[-1] if "@" in user else "localhost"
+    msg["Message-ID"] = make_msgid(domain=sender_domain)
+    msg["Auto-Submitted"] = "auto-generated"   # marks it as an automated report
+
+    # Order matters: least-preferred (plain) first, best (html) last.
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx) as server:
         server.login(user, passwd)
-        server.sendmail(user, [a.strip() for a in mail_to.split(",")], msg.as_string())
+        server.sendmail(user, [a.strip() for a in mail_to.split(",")],
+                        msg.as_string())
     print(f"Sent digest to {mail_to}")
 
 
@@ -335,7 +476,8 @@ def main():
     #     return
 
     html_body = build_html(sections, date_from, date_to)
-    send_email(html_body, total, date_from, date_to)
+    plain_body = _plaintext_version(sections, date_from, date_to)
+    send_email(html_body, plain_body, total, date_from, date_to)
 
 
 if __name__ == "__main__":
