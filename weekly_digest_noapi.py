@@ -43,23 +43,21 @@ import requests
 #   https://europepmc.org/searchsyntax
 # These are the same tuned, human-scoped queries as the main version.
 # ----------------------------------------------------------------------------
-# --- Human-scoping, rewritten to cut pathogen / animal / plant contamination ---
+# --- Human-scoping, v3: title-anchored exclusion + generous inclusion ---
 #
-# Two problems in the first version let non-human work through:
-#   1. "patient" in the human signal matched infectious-disease papers about
-#      pathogens (e.g. a Burkholderia pseudomallei study mentions patients).
-#   2. "population structure" is shared vocabulary with microbial phylogenetics.
+# History of this filter:
+#   v1 let pathogen papers in ("patient" matched infectious-disease work).
+#   v2 over-corrected: a broad NOT over the whole ABSTRACT killed real human
+#      papers that merely *mentioned* a non-human word in passing (e.g. a UK
+#      Biobank PRS paper that says "antimicrobial resistance" once).
 #
-# Fix, in layers:
-#   HUMAN         a positive signal: a MeSH "Humans" tag OR clear human-context
-#                 words. We keep this as an OR (not a hard MeSH gate) because
-#                 preprints often have no MeSH terms yet, and a hard gate would
-#                 silently drop them. "patient" is deliberately removed.
-#   NOT_NONHUMAN  a much broader exclusion of organism and pathogen-genomics
-#                 terms. This is the workhorse that removes camels, Drosophila,
-#                 bacteria, viruses, plants, etc.
+# v3 principle, validated against real missed papers:
+#   - INCLUDE generously: match on a wide set of human-context terms anywhere.
+#   - EXCLUDE narrowly: only when a pathogen / model-organism name appears in
+#     the TITLE, where it signals the paper is actually ABOUT that organism.
+#     A passing mention in the abstract no longer excludes anything.
 #
-# Applied together as: (topic) AND HUMAN NOT_NONHUMAN
+# Applied as: (topic) AND HUMAN NOT_NONHUMAN_TITLE
 
 HUMAN = (
     '(MESH:"Humans" '
@@ -67,31 +65,31 @@ HUMAN = (
     'OR ABSTRACT:"people" OR ABSTRACT:"population" OR TITLE:"population" '
     'OR ABSTRACT:"ethnic" OR TITLE:"ethnic" '
     'OR ABSTRACT:"ancestry" OR TITLE:"ancestry" '
-    'OR ABSTRACT:"Homo sapiens" OR ABSTRACT:"biobank" '
-    'OR TITLE:"UK Biobank" OR ABSTRACT:"UK Biobank")'
+    'OR ABSTRACT:"cohort" OR ABSTRACT:"individuals" '
+    'OR ABSTRACT:"Homo sapiens" OR ABSTRACT:"biobank" OR TITLE:"biobank" '
+    'OR ABSTRACT:"patient" OR ABSTRACT:"polygenic" '
+    'OR ABSTRACT:"genome-wide association" OR ABSTRACT:"UK Biobank")'
 )
 
-# Broad exclusion. Grouped for readability; all OR-ed inside one NOT.
-NOT_NONHUMAN = (
+# Exclusion fires ONLY on TITLE terms: a non-human organism named in the title
+# means the paper is about that organism, not about humans. Kept deliberately
+# short and specific to avoid the v2 over-blocking.
+NOT_NONHUMAN_TITLE = (
     'NOT ('
-    # microbes / pathogens
-    'ABSTRACT:"bacterial" OR ABSTRACT:"bacterium" OR ABSTRACT:"pathogen" '
-    'OR TITLE:"pathogen" OR ABSTRACT:"virus" OR TITLE:"virus" OR ABSTRACT:"viral" '
-    'OR ABSTRACT:"antimicrobial" OR ABSTRACT:"antibiotic" OR ABSTRACT:"outbreak" '
-    'OR ABSTRACT:"isolates" OR TITLE:"isolates" OR ABSTRACT:"strains" OR TITLE:"strains" '
-    'OR ABSTRACT:"serotype" OR ABSTRACT:"phylogenomic" OR TITLE:"phylogenomic" '
-    'OR ABSTRACT:"E. coli" OR ABSTRACT:"Salmonella" OR ABSTRACT:"Mycobacterium" '
-    'OR ABSTRACT:"Burkholderia" OR ABSTRACT:"Klebsiella" OR ABSTRACT:"Pseudomonas" '
-    'OR ABSTRACT:"Staphylococcus" OR ABSTRACT:"Streptococcus" '
-    # model organisms / animals / plants
-    'OR TITLE:"Drosophila" OR ABSTRACT:"Drosophila" OR ABSTRACT:"zebrafish" '
-    'OR ABSTRACT:"mouse" OR ABSTRACT:"murine" OR ABSTRACT:"mice" '
-    'OR ABSTRACT:"cattle" OR ABSTRACT:"bovine" OR ABSTRACT:"camel" '
-    'OR ABSTRACT:"livestock" OR ABSTRACT:"poultry" OR ABSTRACT:"swine" OR ABSTRACT:"porcine" '
-    'OR ABSTRACT:"crop" OR ABSTRACT:"plant" OR ABSTRACT:"maize" OR ABSTRACT:"rice" '
-    'OR ABSTRACT:"wild populations" OR ABSTRACT:"accessions" '
-    # veterinary / non-human MeSH
-    'OR MESH:"Animals, Wild" OR MESH:"Plants" OR MESH:"Bacteria"'
+    # pathogens / microbes (title-level)
+    'TITLE:"virus" OR TITLE:"viral" OR TITLE:"bacterial" OR TITLE:"bacterium" '
+    'OR TITLE:"pathogen" OR TITLE:"isolates" OR TITLE:"isolate" OR TITLE:"strains" '
+    'OR TITLE:"serotype" OR TITLE:"antimicrobial resistance" '
+    'OR TITLE:"Burkholderia" OR TITLE:"Klebsiella" OR TITLE:"Pseudomonas" '
+    'OR TITLE:"Salmonella" OR TITLE:"Mycobacterium" OR TITLE:"Escherichia" '
+    'OR TITLE:"Staphylococcus" OR TITLE:"Streptococcus" OR TITLE:"Acinetobacter" '
+    'OR TITLE:"Plasmodium" OR TITLE:"malaria" OR TITLE:"SARS-CoV" '
+    # model organisms / animals / plants (title-level)
+    'OR TITLE:"Drosophila" OR TITLE:"zebrafish" OR TITLE:"murine" OR TITLE:"mouse" '
+    'OR TITLE:"mice" OR TITLE:"bovine" OR TITLE:"cattle" OR TITLE:"camel" '
+    'OR TITLE:"poultry" OR TITLE:"swine" OR TITLE:"porcine" OR TITLE:"canine" '
+    'OR TITLE:"equine" OR TITLE:"maize" OR TITLE:"rice" OR TITLE:"wheat" '
+    'OR TITLE:"plant" OR TITLE:"crop" OR TITLE:"Arabidopsis"'
     ')'
 )
 
@@ -110,7 +108,7 @@ TOPICS = [
      'OR TITLE:"reference cohort" OR ABSTRACT:"reference cohort" '
      'OR ((ABSTRACT:"genomic diversity" OR ABSTRACT:"genetic diversity" '
      'OR ABSTRACT:"human genetic variation") AND (ABSTRACT:"sequencing" OR ABSTRACT:"whole-genome"))'
-     f') AND {HUMAN} {NOT_NONHUMAN}'),
+     f') AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
 
     ("Ancestry, admixture & demographic history",
      '('
@@ -123,7 +121,7 @@ TOPICS = [
      'OR ABSTRACT:"population stratification") '
      'AND (ABSTRACT:"whole-genome" OR ABSTRACT:"sequencing" OR ABSTRACT:"SNP" '
      'OR ABSTRACT:"variants" OR ABSTRACT:"genome"))'
-     f') AND {HUMAN} {NOT_NONHUMAN}'),
+     f') AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
 
     ("Pangenome, assembly & T2T",
      '('
@@ -134,7 +132,7 @@ TOPICS = [
      'OR TITLE:"telomere-to-telomere" OR ABSTRACT:"telomere-to-telomere" '
      'OR TITLE:"T2T" OR ABSTRACT:"complete genome assembly" '
      'OR TITLE:"human pangenome" OR ABSTRACT:"human pangenome"'
-     f') AND {HUMAN} {NOT_NONHUMAN}'),
+     f') AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
 
     ("Sequencing technology evaluation",
      '(('
@@ -145,7 +143,7 @@ TOPICS = [
      'ABSTRACT:"comparison" OR TITLE:"comparison" OR ABSTRACT:"benchmark" OR TITLE:"benchmark" '
      'OR ABSTRACT:"evaluation" OR ABSTRACT:"read accuracy" OR ABSTRACT:"variant calling accuracy" '
      'OR ABSTRACT:"structural variant detection" OR ABSTRACT:"de novo assembly"'
-     f')) AND {HUMAN} {NOT_NONHUMAN}'),
+     f')) AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
 
     ("Precision & population health genomics",
      '(('
@@ -158,7 +156,7 @@ TOPICS = [
      'OR TITLE:"genomic implementation" OR ABSTRACT:"genomic implementation" '
      'OR ((ABSTRACT:"polygenic risk score" OR ABSTRACT:"polygenic score") '
      'AND (ABSTRACT:"clinical" OR ABSTRACT:"implementation" OR ABSTRACT:"population"))'
-     f')) AND {HUMAN} {NOT_NONHUMAN}'),
+     f')) AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
 ]
 
 
@@ -250,19 +248,20 @@ _SAFE_TAGS = ("i", "b", "sub", "sup", "em", "strong")
 _TAG_RE = re.compile(r"</?([a-zA-Z0-9]+)[^>]*>")
 
 
+_STRUCTURAL_RE = re.compile(
+    r"</?(?:h[1-6]|p|sec|title|abstracttext|label|list|item|caption|div)"
+    r"[^>]*>", re.IGNORECASE)
+
+
 def _sanitize_inline(text):
-    """Escape the abstract for HTML, but let a small safelist of formatting
-    tags render instead of showing as literal <i> text. Approach: escape the
-    whole string first (so all real markup is neutralised), then selectively
-    un-escape the safelisted tags. This is safe because only the exact tag
-    forms we re-enable can come back; anything else stays escaped."""
+    """Escape text for HTML, then re-enable only the safelisted formatting tags
+    (<i> for species names, <b>, <sub>, <sup>). Structural tags like <h4> are
+    already stripped upstream in _clean_abstract, so they never reach here."""
     escaped = html.escape(text)
     for tag in _SAFE_TAGS:
-        # Re-enable <i>, </i>, <i/> style forms only.
         escaped = escaped.replace(f"&lt;{tag}&gt;", f"<{tag}>")
         escaped = escaped.replace(f"&lt;/{tag}&gt;", f"</{tag}>")
         escaped = escaped.replace(f"&lt;{tag}/&gt;", f"<{tag}>")
-        # Capitalised variants occasionally appear.
         T = tag.upper()
         escaped = escaped.replace(f"&lt;{T}&gt;", f"<{tag}>")
         escaped = escaped.replace(f"&lt;/{T}&gt;", f"</{tag}>")
@@ -270,9 +269,11 @@ def _sanitize_inline(text):
 
 
 def _clean_abstract(text):
-    """Strip, collapse whitespace. Returns a placeholder when empty."""
+    """Strip structural tags (<h4>Background</h4> -> Background), collapse
+    whitespace. Returns empty string when there's nothing usable."""
     if not text:
         return ""
+    text = _STRUCTURAL_RE.sub(" ", text)
     return " ".join(text.split())
 
 
