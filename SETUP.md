@@ -127,8 +127,13 @@ time.
 
 In this section, "your script" means whichever one you deployed
 (`weekly_digest_noapi.py` or `weekly_digest.py`), and "your workflow" means its
-matching `.yml` from the table in Step 2. The `TOPICS` list is identical in both
-scripts, so topic edits work the same either way.
+matching `.yml` from the table in Step 2.
+
+Note: the two scripts filter for human studies differently. The no-API version
+filters *after* retrieval using Europe PMC's organism annotations (it drops any
+paper tagged with a non-human organism), so its `TOPICS` queries contain only
+subject phrases. The AI version still filters within the query. Editing the
+subject phrases in `TOPICS` works the same way in both.
 
 **Change the topics:** open your script, edit the `TOPICS` list near the top.
 Each entry is a label plus a Europe PMC search query. Syntax reference:

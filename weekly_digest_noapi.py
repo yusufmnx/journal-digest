@@ -43,46 +43,12 @@ import requests
 #   https://europepmc.org/searchsyntax
 # These are the same tuned, human-scoped queries as the main version.
 # ----------------------------------------------------------------------------
-# --- Human-scoping, v4: light-touch inclusion + title-only exclusion ---
-#
-# Change from v3: MESH:"Humans" REMOVED. It was the most likely cause of the
-# near-empty result set: recently published papers and preprints (a large part
-# of this feed) often have no MeSH terms assigned yet, so requiring a MeSH tag
-# silently drops them. Non-human filtering is handled entirely by the
-# title-anchored exclusion below, which does not depend on MeSH.
-
-HUMAN = (
-    '(ABSTRACT:"human" OR TITLE:"human" '
-    'OR ABSTRACT:"people" OR ABSTRACT:"population" OR TITLE:"population" '
-    'OR ABSTRACT:"ethnic" OR TITLE:"ethnic" '
-    'OR ABSTRACT:"ancestry" OR TITLE:"ancestry" '
-    'OR ABSTRACT:"cohort" OR ABSTRACT:"individuals" '
-    'OR ABSTRACT:"Homo sapiens" OR ABSTRACT:"biobank" OR TITLE:"biobank" '
-    'OR ABSTRACT:"patient" OR ABSTRACT:"polygenic" '
-    'OR ABSTRACT:"genome-wide association" OR ABSTRACT:"UK Biobank")'
-)
-
-# Exclusion fires ONLY on TITLE terms: a non-human organism named in the title
-# means the paper is about that organism, not about humans. Kept deliberately
-# short and specific to avoid over-blocking.
-NOT_NONHUMAN_TITLE = (
-    'NOT ('
-    # pathogens / microbes (title-level)
-    'TITLE:"virus" OR TITLE:"viral" OR TITLE:"bacterial" OR TITLE:"bacterium" '
-    'OR TITLE:"pathogen" OR TITLE:"isolates" OR TITLE:"isolate" OR TITLE:"strains" '
-    'OR TITLE:"serotype" OR TITLE:"antimicrobial resistance" '
-    'OR TITLE:"Burkholderia" OR TITLE:"Klebsiella" OR TITLE:"Pseudomonas" '
-    'OR TITLE:"Salmonella" OR TITLE:"Mycobacterium" OR TITLE:"Escherichia" '
-    'OR TITLE:"Staphylococcus" OR TITLE:"Streptococcus" OR TITLE:"Acinetobacter" '
-    'OR TITLE:"Plasmodium" OR TITLE:"malaria" OR TITLE:"SARS-CoV" '
-    # model organisms / animals / plants (title-level)
-    'OR TITLE:"Drosophila" OR TITLE:"zebrafish" OR TITLE:"murine" OR TITLE:"mouse" '
-    'OR TITLE:"mice" OR TITLE:"bovine" OR TITLE:"cattle" OR TITLE:"camel" '
-    'OR TITLE:"poultry" OR TITLE:"swine" OR TITLE:"porcine" OR TITLE:"canine" '
-    'OR TITLE:"equine" OR TITLE:"maize" OR TITLE:"rice" OR TITLE:"wheat" '
-    'OR TITLE:"plant" OR TITLE:"crop" OR TITLE:"Arabidopsis"'
-    ')'
-)
+# Human-scoping is NO LONGER done in the query. Keyword and title filters both
+# failed against live data (human and non-human genomics share vocabulary).
+# Instead, each topic's phrase query runs unfiltered, and results are filtered
+# AFTER retrieval using Europe PMC organism annotations (see _is_human_paper).
+# The topic queries below therefore contain ONLY subject-matter phrases.
+# ----------------------------------------------------------------------------
 
 TOPICS = [
     ("Population-scale sequencing & initiatives",
@@ -99,7 +65,7 @@ TOPICS = [
      'OR TITLE:"reference cohort" OR ABSTRACT:"reference cohort" '
      'OR ((ABSTRACT:"genomic diversity" OR ABSTRACT:"genetic diversity" '
      'OR ABSTRACT:"human genetic variation") AND (ABSTRACT:"sequencing" OR ABSTRACT:"whole-genome"))'
-     f') AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
+     ')'),
 
     ("Ancestry, admixture & demographic history",
      '('
@@ -112,7 +78,7 @@ TOPICS = [
      'OR ABSTRACT:"population stratification") '
      'AND (ABSTRACT:"whole-genome" OR ABSTRACT:"sequencing" OR ABSTRACT:"SNP" '
      'OR ABSTRACT:"variants" OR ABSTRACT:"genome"))'
-     f') AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
+     ')'),
 
     ("Pangenome, assembly & T2T",
      '('
@@ -123,7 +89,7 @@ TOPICS = [
      'OR TITLE:"telomere-to-telomere" OR ABSTRACT:"telomere-to-telomere" '
      'OR TITLE:"T2T" OR ABSTRACT:"complete genome assembly" '
      'OR TITLE:"human pangenome" OR ABSTRACT:"human pangenome"'
-     f') AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
+     ')'),
 
     ("Sequencing technology evaluation",
      '(('
@@ -134,7 +100,7 @@ TOPICS = [
      'ABSTRACT:"comparison" OR TITLE:"comparison" OR ABSTRACT:"benchmark" OR TITLE:"benchmark" '
      'OR ABSTRACT:"evaluation" OR ABSTRACT:"read accuracy" OR ABSTRACT:"variant calling accuracy" '
      'OR ABSTRACT:"structural variant detection" OR ABSTRACT:"de novo assembly"'
-     f')) AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
+     '))'),
 
     ("Precision & population health genomics",
      '(('
@@ -147,7 +113,7 @@ TOPICS = [
      'OR TITLE:"genomic implementation" OR ABSTRACT:"genomic implementation" '
      'OR ((ABSTRACT:"polygenic risk score" OR ABSTRACT:"polygenic score") '
      'AND (ABSTRACT:"clinical" OR ABSTRACT:"implementation" OR ABSTRACT:"population"))'
-     f')) AND {HUMAN} {NOT_NONHUMAN_TITLE}'),
+     '))'),
 ]
 
 
@@ -175,7 +141,10 @@ DAYS_BACK  = _int_env("DAYS_BACK", 14)   # 14d: a 7d window often catches too li
 MAX_PAPERS = _int_env("MAX_PAPERS", 60)
 
 EPMC_BASE  = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-PER_TOPIC_LIMIT = 20
+# Fetch more per topic than we'll keep: organism filtering discards a large
+# fraction (often half or more) as non-human, so we need headroom to still end
+# up with a useful number of human papers per topic.
+PER_TOPIC_LIMIT = 40
 
 
 def epmc_search(query_fragment, date_from, date_to):
@@ -196,11 +165,7 @@ def epmc_search(query_fragment, date_from, date_to):
         print(f"  ! Europe PMC query failed: {e}", file=sys.stderr)
         return []
 
-    # Log the total matches Europe PMC reports for this query. If this is 0 or
-    # tiny, the query is the problem (not the display). The full query is
-    # printed too so it can be pasted into https://europepmc.org/search to check.
     print(f"  hitCount={data.get('hitCount', '?')}")
-    print(f"  query={query}")
 
     papers = []
     for res in data.get("resultList", {}).get("result", []):
@@ -232,8 +197,76 @@ def epmc_search(query_fragment, date_from, date_to):
             "date": (res.get("firstPublicationDate") or "").strip(),
             "link": link,
             "is_preprint": res.get("source") == "PPR",
+            # For organism-annotation lookup:
+            "annot_id": res.get("pmid") or res.get("id"),
+            "annot_source": res.get("source", "MED"),
         })
     return papers
+
+
+# --- Organism-annotation filtering ---------------------------------------
+# Keyword and title-based human filtering both failed (verified against live
+# data over several rounds): human and non-human genomics share almost all
+# vocabulary. The reliable signal is Europe PMC's text-mined ORGANISM tags.
+#
+# Rule (strict, chosen for precision): drop a paper if it carries ANY real
+# non-human organism tag, even if it also has a human tag (this removes human-
+# pathogen and zoonosis papers like HMPV or Enterococcus genomics). Keep papers
+# with no organism tags, or only human tags. This costs a few genuine human
+# papers that happen to be tagged by a pathogen (e.g. an HIV-cohort GWAS tagged
+# only {hiv}); that trade was chosen deliberately in favour of a clean list.
+
+ANNOT_URL = ("https://www.ebi.ac.uk/europepmc/annotations_api/"
+             "annotationsByArticleIds")
+
+_HUMAN_TAGS = {
+    "human", "humans", "homo sapiens", "patient", "patients", "human being",
+    "human beings", "man", "woman", "men", "women", "child", "children",
+    "boy", "girl", "adult", "adults", "infant", "infants", "neonate",
+    "fetus", "mother", "father", "people",
+}
+# Tags the annotator may return that are peoples/groups, not animals/plants, and
+# so must NOT disqualify a paper.
+_NON_ORGANISM_TAGS = {"diaspora"}
+
+
+def _fetch_organisms(annot_id, source):
+    """Return the set of lowercased organism names Europe PMC has tagged for an
+    article, or None if the lookup failed (network/parse error). An empty set
+    means the article has no organism tags (common for clinical/human papers)."""
+    if not annot_id:
+        return set()
+    try:
+        r = requests.get(ANNOT_URL,
+                         params={"articleIds": f"{source}:{annot_id}",
+                                 "type": "Organisms", "format": "JSON"},
+                         timeout=30)
+        r.raise_for_status()
+        names = set()
+        for art in r.json():
+            for ann in art.get("annotations", []):
+                exact = (ann.get("exact") or "").strip().lower()
+                if exact:
+                    names.add(exact)
+        return names
+    except Exception as e:
+        print(f"    ! organism lookup failed for {source}:{annot_id}: {e}",
+              file=sys.stderr)
+        return None
+
+
+def _is_human_paper(orgs):
+    """Apply the strict rule. `orgs` is a set of tag strings, or None if the
+    lookup failed. On failure we KEEP (fail open) so a flaky annotation call
+    never silently drops real papers; the alternative (fail closed) would risk
+    emptying the digest on an API hiccup."""
+    if orgs is None:
+        return True                      # lookup failed -> keep (fail open)
+    if not orgs:
+        return True                      # no organism tags -> keep
+    real = {o for o in orgs
+            if o not in _NON_ORGANISM_TAGS and o not in _HUMAN_TAGS}
+    return not real                      # keep only if no non-human organism left
 
 
 import re
@@ -453,16 +486,23 @@ def main():
         print(f"Topic: {label}")
         papers = epmc_search(fragment, date_from, date_to)
         kept = []
+        dropped_nonhuman = 0
         for p in papers:
             if p["uid"] in seen:
                 continue
             if budget <= 0:
                 break
+            # Organism-annotation filter: drop papers tagged with a non-human
+            # organism (see _is_human_paper). One extra API call per paper.
+            orgs = _fetch_organisms(p["annot_id"], p["annot_source"])
+            if not _is_human_paper(orgs):
+                dropped_nonhuman += 1
+                continue
             seen.add(p["uid"])
             kept.append(p)
             budget -= 1
         sections[label] = kept
-        print(f"  kept {len(kept)}")
+        print(f"  kept {len(kept)}, dropped {dropped_nonhuman} non-human")
 
     total = sum(len(p) for p in sections.values())
     print(f"Total papers: {total}")
